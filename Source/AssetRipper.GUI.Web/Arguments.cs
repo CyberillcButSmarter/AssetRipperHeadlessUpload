@@ -11,6 +11,10 @@ internal sealed partial class Arguments
 	[Description("If nonzero, the application will attempt to host on this port, instead of finding a random unused port.")]
 	public int Port { get; set; }
 
+	[CommandLineArgument(DefaultValue = WebApplicationLauncher.Defaults.Host)]
+	[Description("The address to bind to. Defaults to 127.0.0.1 (loopback only). Use 0.0.0.0 to accept connections from other machines on your LAN/VPN.")]
+	public string Host { get; set; } = WebApplicationLauncher.Defaults.Host;
+
 	[CommandLineArgument(DefaultValue = WebApplicationLauncher.Defaults.Log)]
 	[Description("If true, the application will log to a file.")]
 	public bool Log { get; set; }

@@ -32,6 +32,7 @@ public static class WebApplicationLauncher
 	internal static class Defaults
 	{
 		public const int Port = 0;
+		public const string Host = "127.0.0.1";
 		public const bool Log = true;
 		public const string? LogPath = null;
 		public const bool Headless = false;
@@ -65,10 +66,10 @@ public static class WebApplicationLauncher
 			}
 		}
 
-		Launch(arguments.Port, arguments.Headless, arguments.Log, arguments.LogPath);
+		Launch(arguments.Port, arguments.Headless, arguments.Log, arguments.LogPath, arguments.Host);
 	}
 
-	public static void Launch(int port = Defaults.Port, bool headless = Defaults.Headless, bool log = Defaults.Log, string? logPath = Defaults.LogPath)
+	public static void Launch(int port = Defaults.Port, bool headless = Defaults.Headless, bool log = Defaults.Log, string? logPath = Defaults.LogPath, string host = Defaults.Host)
 	{
 		GameFileLoader.Headless = headless;
 
@@ -97,7 +98,11 @@ public static class WebApplicationLauncher
 #endif
 		});
 
-		builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
+		builder.WebHost.UseUrls($"http://{host}:{port}");
+
+		// Game files (APKs, executables, zipped data folders) can be large, so remove the
+		// default request-body size limit. Uploads are streamed to disk in Commands.Upload.
+		builder.WebHost.ConfigureKestrel(static options => options.Limits.MaxRequestBodySize = null);
 
 		builder.Services.AddTransient<ErrorHandlingMiddleware>(static (_) => new());
 		builder.Services.ConfigureHttpJsonOptions(options =>
@@ -266,6 +271,9 @@ public static class WebApplicationLauncher
 			.Produces(StatusCodes.Status302Found);
 		app.MapPost("/LoadFolder", Commands.HandleCommand<Commands.LoadFolder>)
 			.AcceptsFormDataContainingPath()
+			.Produces(StatusCodes.Status302Found);
+		app.MapPost("/Upload", Commands.HandleCommand<Commands.Upload>)
+			.Accepts<IFormFile>("multipart/form-data")
 			.Produces(StatusCodes.Status302Found);
 		app.MapPost("/Reset", Commands.HandleCommand<Commands.Reset>);
 

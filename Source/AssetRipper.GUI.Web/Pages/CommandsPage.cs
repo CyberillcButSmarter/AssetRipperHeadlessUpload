@@ -29,6 +29,19 @@ public sealed class CommandsPage : VuePage
 					new Button(writer).WithCustomAttribute("@click", "handleSelectLoadFolder").WithClass("btn btn-success").Close(Localization.SelectFolder);
 				}
 			}
+
+			// Upload from a remote machine: the browser sends the file(s) to the server,
+			// which decompiles them host-side. Zip a data folder to upload it as one file.
+			using (new P(writer).End())
+			{
+				using (new Form(writer).WithAction("/Upload").WithMethod("post")
+					.WithCustomAttribute("enctype", "multipart/form-data").End())
+				{
+					new Input(writer).WithClass("form-control mb-2").WithType("file").WithName("files")
+						.WithCustomAttribute("multiple", "").Close();
+					new Input(writer).WithType("submit").WithClass("btn btn-primary").WithValue(Localization.MenuLoad).Close();
+				}
+			}
 		}
 		else
 		{

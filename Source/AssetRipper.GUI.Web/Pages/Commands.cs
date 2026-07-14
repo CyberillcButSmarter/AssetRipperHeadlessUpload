@@ -1,7 +1,11 @@
-﻿using AssetRipper.NativeDialogs;
+﻿using AssetRipper.Import.Logging;
+using AssetRipper.NativeDialogs;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Primitives;
+using Microsoft.Net.Http.Headers;
+using System.IO.Compression;
 
 namespace AssetRipper.GUI.Web.Pages;
 
@@ -84,6 +88,104 @@ public static class Commands
 				GameFileLoader.LoadAndProcess(paths);
 			}
 			return null;
+		}
+	}
+
+	/// <summary>
+	/// Accepts a multipart/form-data upload of one or more game files (an APK, an
+	/// executable, or a zipped data folder), streams them to a temporary directory on
+	/// the server, extracts any zip archives, and then loads and processes them.
+	/// This is what makes the host usable remotely: a browser on another machine can
+	/// upload the game and have it decompiled server-side, without any native file dialog.
+	/// </summary>
+	public readonly struct Upload : ICommand
+	{
+		static async Task<string?> ICommand.Execute(HttpRequest request)
+		{
+			if (!request.HasFormContentType || !MediaTypeHeaderValue.TryParse(request.ContentType, out MediaTypeHeaderValue? mediaType))
+			{
+				return CommandsPath;
+			}
+
+			string? boundary = HeaderUtilities.RemoveQuotes(mediaType.Boundary).Value;
+			if (string.IsNullOrEmpty(boundary))
+			{
+				return CommandsPath;
+			}
+
+			string uploadDirectory = CreateFreshUploadDirectory();
+			List<string> savedFiles = [];
+
+			MultipartReader reader = new(boundary, request.Body);
+			MultipartSection? section;
+			while ((section = await reader.ReadNextSectionAsync()) is not null)
+			{
+				if (!ContentDispositionHeaderValue.TryParse(section.ContentDisposition, out ContentDispositionHeaderValue? disposition)
+					|| !disposition.IsFileDisposition())
+				{
+					continue;
+				}
+
+				// Path.GetFileName strips any directory components a malicious client might send.
+				string fileName = Path.GetFileName(disposition.FileNameStar.Value ?? disposition.FileName.Value ?? "");
+				if (string.IsNullOrEmpty(fileName))
+				{
+					continue;
+				}
+
+				string destination = Path.Combine(uploadDirectory, fileName);
+				await using (FileStream fileStream = File.Create(destination))
+				{
+					await section.Body.CopyToAsync(fileStream);
+				}
+				Logger.Info(LogCategory.Import, $"Received upload '{fileName}'.");
+				savedFiles.Add(destination);
+			}
+
+			if (savedFiles.Count == 0)
+			{
+				return CommandsPath;
+			}
+
+			List<string> loadPaths = [];
+			foreach (string file in savedFiles)
+			{
+				if (string.Equals(Path.GetExtension(file), ".zip", StringComparison.OrdinalIgnoreCase))
+				{
+					// A zipped folder: extract it and load the resulting directory.
+					string extractedDirectory = Path.Combine(uploadDirectory, Path.GetFileNameWithoutExtension(file));
+					Directory.CreateDirectory(extractedDirectory);
+					ZipFile.ExtractToDirectory(file, extractedDirectory, overwriteFiles: true);
+					loadPaths.Add(extractedDirectory);
+				}
+				else
+				{
+					loadPaths.Add(file);
+				}
+			}
+
+			GameFileLoader.LoadAndProcess(loadPaths);
+			return null;
+		}
+
+		private static string CreateFreshUploadDirectory()
+		{
+			string baseDirectory = Path.Combine(Path.GetTempPath(), "AssetRipperUploads");
+			// Only one game is loaded at a time, so clear previous uploads to avoid filling the disk.
+			if (Directory.Exists(baseDirectory))
+			{
+				try
+				{
+					Directory.Delete(baseDirectory, true);
+				}
+				catch (Exception ex)
+				{
+					Logger.Warning(LogCategory.Import, $"Could not clear previous uploads: {ex.Message}");
+				}
+			}
+			string directory = Path.Combine(baseDirectory, Guid.NewGuid().ToString("N"));
+			Directory.CreateDirectory(directory);
+			return directory;
 		}
 	}
 
