@@ -1,0 +1,121 @@
+name: Sync Upstream
+
+# Keeps this fork up to date with AssetRipper/AssetRipper WITHOUT discarding the
+# fork's own commits.
+#
+# How it protects your custom code:
+#   * It MERGES upstream into your history (git merge). A merge only combines
+#     commits - it never deletes yours. It never runs `reset --hard` or a force
+#     sync, so your changes cannot be clobbered.
+#   * A clean merge is built to verify it compiles, then pushed to master.
+#   * If upstream edited the SAME lines as your feature (a real conflict), or the
+#     merged result fails to build, nothing is pushed to master. Instead a branch
+#     + pull request is opened so you resolve it by hand.
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily at 06:00 UTC - GitHub cannot push-notify a fork, so we poll
+  workflow_dispatch: {} # allow manual "Sync now" from the Actions tab
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REPO: https://github.com/AssetRipper/AssetRipper.git
+  UPSTREAM_BRANCH: master
+  TARGET_BRANCH: master
+  SYNC_BRANCH: auto/upstream-sync
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork (full history)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0 # merges need the whole history, not a shallow clone
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream "$UPSTREAM_BRANCH"
+
+      - name: Check for new upstream commits
+        id: check
+        run: |
+          behind=$(git rev-list --count HEAD..upstream/${UPSTREAM_BRANCH})
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          if [ "$behind" -eq 0 ]; then
+            echo "Already up to date with upstream. Nothing to do."
+          else
+            echo "Fork is $behind commit(s) behind upstream."
+          fi
+
+      - name: Attempt merge
+        if: steps.check.outputs.behind != '0'
+        id: merge
+        run: |
+          if git merge --no-edit "upstream/${UPSTREAM_BRANCH}"; then
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+            echo "Merge completed with no conflicts."
+          else
+            git merge --abort
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+            echo "Merge hit conflicts - will open a PR for manual resolution instead."
+          fi
+
+      - name: Setup .NET
+        if: steps.merge.outputs.result == 'clean'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build merged result
+        if: steps.merge.outputs.result == 'clean'
+        id: build
+        run: dotnet build ./Source/AssetRipper.GUI.Free/ -c Release
+
+      # Happy path: clean merge that compiles -> update master automatically.
+      - name: Push to ${{ env.TARGET_BRANCH }}
+        if: steps.merge.outputs.result == 'clean' && steps.build.outcome == 'success'
+        run: git push origin HEAD:${TARGET_BRANCH}
+
+      # Fallback: conflict OR build failure -> never touch master; open a PR.
+      - name: Open sync pull request for manual review
+        if: |
+          always() &&
+          steps.check.outputs.behind != '0' &&
+          (steps.merge.outputs.result == 'conflict' || steps.build.outcome == 'failure')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        run: |
+          # If a sync PR is already open, leave it alone - do NOT force-push, or we
+          # would wipe any conflict resolution you have committed there mid-review.
+          if gh pr view "$SYNC_BRANCH" --json number >/dev/null 2>&1; then
+            echo "A sync PR is already open. Leaving it untouched for you to resolve."
+            exit 0
+          fi
+
+          # No PR yet: push the raw upstream state to a fresh branch and open a PR
+          # INTO master. Merging that PR performs a real git merge (upstream merged
+          # into your history), so your commits are preserved and only genuinely
+          # conflicting lines need manual resolution. Master is never touched here.
+          git push --force origin "refs/remotes/upstream/${UPSTREAM_BRANCH}:refs/heads/${SYNC_BRANCH}"
+
+          reason="the merge conflicts with your changes"
+          if [ "$BUILD_OUTCOME" = "failure" ]; then
+            reason="the merged result failed to build"
+          fi
+          gh pr create \
+            --base "$TARGET_BRANCH" \
+            --head "$SYNC_BRANCH" \
+            --title "Upstream sync needs manual review" \
+            --body "Automated upstream sync could not be applied because ${reason}. Resolve it here and merge - merging runs a real git merge, so your fork's commits are kept. Your master branch was left untouched."
