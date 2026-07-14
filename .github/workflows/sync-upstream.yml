@@ -20,6 +20,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write # required to dispatch the Publish workflow after a sync
 
 env:
   UPSTREAM_REPO: https://github.com/AssetRipper/AssetRipper.git
@@ -86,6 +87,14 @@ jobs:
       - name: Push to ${{ env.TARGET_BRANCH }}
         if: steps.merge.outputs.result == 'clean' && steps.build.outcome == 'success'
         run: git push origin HEAD:${TARGET_BRANCH}
+
+      # A push made with the built-in token does NOT fire Publish's `push` trigger,
+      # so dispatch it explicitly to rebuild the continuous release for the new code.
+      - name: Trigger continuous release build
+        if: steps.merge.outputs.result == 'clean' && steps.build.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run publish.yml --ref "$TARGET_BRANCH"
 
       # Fallback: conflict OR build failure -> never touch master; open a PR.
       - name: Open sync pull request for manual review

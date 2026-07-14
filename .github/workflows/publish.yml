@@ -32,37 +32,59 @@ jobs:
         run: dotnet publish -c Release -r ${{ matrix.config.runtime }}
         working-directory: ./Source/AssetRipper.GUI.Free/
 
-      - name: List Files
-        shell: bash
-        run: ls -R ./Source/0Bins/AssetRipper.GUI.Free/Release/
-
-      - name: List Files
+      - name: Stamp compile time
         shell: bash
         run: date -u > ./Source/0Bins/AssetRipper.GUI.Free/Release/${{ matrix.config.runtime }}/publish/compile_time.txt
 
-      - name: Archive & Upload (zip)
+      - name: Create Archive (zip)
         if: ${{ matrix.config.archive == 'zip' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: AssetRipper_${{ matrix.config.name }}
-          path: |
-            ./Source/0Bins/AssetRipper.GUI.Free/Release/${{ matrix.config.runtime }}/publish/${{ matrix.config.executable }}
-            ./Source/0Bins/AssetRipper.GUI.Free/Release/${{ matrix.config.runtime }}/publish/*.dll
-            ./Source/0Bins/AssetRipper.GUI.Free/Release/${{ matrix.config.runtime }}/publish/*.so
-            ./Source/0Bins/AssetRipper.GUI.Free/Release/${{ matrix.config.runtime }}/publish/*.dylib
-            ./Source/0Bins/AssetRipper.GUI.Free/Release/${{ matrix.config.runtime }}/publish/compile_time.txt
-          if-no-files-found: error
-    
+        shell: pwsh
+        working-directory: ./Source/0Bins/AssetRipper.GUI.Free/Release/${{ matrix.config.runtime }}/publish
+        run: |
+          $items = @('${{ matrix.config.executable }}', 'compile_time.txt') +
+            (Get-ChildItem -File -Path *.dll,*.so,*.dylib | ForEach-Object Name)
+          Compress-Archive -Path $items -DestinationPath "AssetRipper_${{ matrix.config.name }}.zip" -Force
+
       - name: Create Archive (tar)
         if: ${{ matrix.config.archive == 'tar' }}
         shell: bash
         working-directory: ./Source/0Bins/AssetRipper.GUI.Free/Release/${{ matrix.config.runtime }}/publish
         run: tar cvJf "AssetRipper_${{ matrix.config.name }}.tar.xz" "${{ matrix.config.executable }}" compile_time.txt $(ls *.{dll,so,dylib} 2>/dev/null)
-      
-      - name: Upload Archive (tar)
-        if: ${{ matrix.config.archive == 'tar' }}
+
+      - name: Upload build archive
         uses: actions/upload-artifact@v7
         with:
-          path: ./Source/0Bins/AssetRipper.GUI.Free/Release/${{ matrix.config.runtime }}/publish/AssetRipper_${{ matrix.config.name }}.tar.xz
-          archive: false # we dont need to archive it twice
+          name: AssetRipper_${{ matrix.config.name }}
+          path: ./Source/0Bins/AssetRipper.GUI.Free/Release/${{ matrix.config.runtime }}/publish/AssetRipper_${{ matrix.config.name }}.*
+          if-no-files-found: error
 
+  # Publishes the per-platform archives to a single rolling "continuous" prerelease.
+  # Runs on pushes to master and manual/dispatched runs, but NOT on pull requests
+  # (PRs just build, they don't release).
+  release:
+    needs: publish
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # required to create/update the release and its tag
+    steps:
+      - name: Download all build archives
+        uses: actions/download-artifact@v7
+        with:
+          path: release-assets
+          pattern: AssetRipper_*
+          merge-multiple: true
+
+      - name: Publish rolling "continuous" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -R release-assets
+          # Roll the single "continuous" tag forward to the freshly built commit:
+          # delete the old release + tag, then recreate at this commit with new assets.
+          gh release delete continuous --cleanup-tag --yes || true
+          gh release create continuous release-assets/* \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Continuous build" \
+            --notes "Automatically built from the latest master (${GITHUB_SHA}) at $(date -u '+%Y-%m-%d %H:%M:%S UTC')."
