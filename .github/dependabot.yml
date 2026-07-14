@@ -15,6 +15,10 @@ updates:
       - dependency-name: "Microsoft.DotNet.ILCompiler"
       - dependency-name: "Samboy063.Cpp2IL.Core"
       - dependency-name: "AssetRipper.Cpp2IL.Core"
+      # Source generators must run on the host compiler. Bumping this above the
+      # Roslyn shipped in our build SDK (10.0.x) makes the generators fail to load
+      # (CS9057) and breaks the whole build. Pinned to 5.0.0 to match the SDK.
+      - dependency-name: "Microsoft.CodeAnalysis.CSharp"
     groups:
       NUnit:
         patterns:
