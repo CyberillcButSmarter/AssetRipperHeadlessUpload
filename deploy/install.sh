@@ -22,7 +22,7 @@ echo "==> Creating service user 'assetripper' ..."
 id assetripper >/dev/null 2>&1 || useradd --system --home "$ROOT" --shell /usr/sbin/nologin assetripper
 
 echo "==> Laying down files under $ROOT ..."
-mkdir -p "$ROOT/app"
+mkdir -p "$ROOT/releases"   # the updater fills this and manages the 'current' symlink
 install -m 0755 "$SRC_DIR/update-assetripper.sh" "$ROOT/update-assetripper.sh"
 
 if [ ! -f /etc/assetripper.env ]; then

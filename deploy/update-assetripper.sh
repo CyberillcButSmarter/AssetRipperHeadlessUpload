@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
-# Downloads the latest "continuous" release for this Linux box and, if it is newer
-# than what is installed, swaps it in and restarts the service.
-# Intended to be run as root by assetripper-update.timer (or manually).
+# Safely updates the AssetRipper host to the latest "continuous" release.
+#
+# Safety design:
+#   * flock ensures only one update runs at a time.
+#   * The download is verified (size vs the GitHub API + `xz -t` integrity)
+#     BEFORE anything live is touched, so a truncated/corrupt download aborts
+#     with the running install untouched.
+#   * New builds are extracted into releases/<stamp>/ and activated by an atomic
+#     symlink flip (current -> that dir), so the service never sees a half-written
+#     directory.
+#   * After restart the service is health-checked; if it fails to come up the
+#     symlink is rolled back to the previous release and the service restarted.
+#   * The installed-version stamp is written only after a confirmed-healthy start,
+#     so a failed update simply retries on the next timer tick.
+#
+# Intended to run as root (via assetripper-update.timer), or manually.
 set -euo pipefail
 
 # Defaults (overridable via /etc/assetripper.env)
@@ -10,58 +23,136 @@ REPO="${REPO:-CyberillcButSmarter/AssetRipperHeadlessUpload}"
 TAG="${TAG:-continuous}"
 SERVICE="${SERVICE:-assetripper}"
 RUN_AS="${RUN_AS:-assetripper}"
+KEEP="${KEEP:-3}"            # old releases to retain for rollback
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-20}"  # seconds to confirm the service stays up
 
 # shellcheck disable=SC1091
 [ -f /etc/assetripper.env ] && . /etc/assetripper.env
 
-APP_DIR="$ROOT/app"
+RELEASES_DIR="$ROOT/releases"
+CURRENT_LINK="$ROOT/current"
 STAMP_FILE="$ROOT/.release_stamp"
+LOCK_FILE="$ROOT/.update.lock"
 
+log() { echo "[assetripper-update] $*"; }
+
+mkdir -p "$ROOT"
+
+# --- single-instance lock -------------------------------------------------
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+	log "Another update run holds the lock; exiting."
+	exit 0
+fi
+
+# --- pick the right asset for this box ------------------------------------
 case "$(uname -m)" in
 	x86_64)        ASSET="AssetRipper_linux_x64.tar.xz" ;;
 	aarch64|arm64) ASSET="AssetRipper_linux_arm64.tar.xz" ;;
-	*) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+	*) log "Unsupported architecture: $(uname -m)"; exit 1 ;;
 esac
 
 api="https://api.github.com/repos/$REPO/releases/tags/$TAG"
 auth=()
 [ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
 
-echo "Checking $REPO release '$TAG' for $ASSET ..."
-json="$(curl -fsSL -H 'Accept: application/vnd.github+json' "${auth[@]}" "$api")"
+log "Checking $REPO release '$TAG' for $ASSET ..."
+json="$(curl -fsSL --retry 3 --retry-delay 2 -H 'Accept: application/vnd.github+json' "${auth[@]}" "$api")"
 
-# The release is deleted+recreated on every build, so published_at changes each time.
+# published_at changes on every rebuild (the release is recreated each time).
 remote_stamp="$(printf '%s' "$json" | jq -r '.published_at // .created_at // empty')"
-[ -n "$remote_stamp" ] || { echo "Could not read release timestamp." >&2; exit 1; }
+[ -n "$remote_stamp" ] || { log "Could not read release timestamp."; exit 1; }
 
 local_stamp="$(cat "$STAMP_FILE" 2>/dev/null || true)"
-if [ "$remote_stamp" = "$local_stamp" ]; then
-	echo "Already up to date ($remote_stamp)."
+if [ "$remote_stamp" = "$local_stamp" ] && [ -x "$CURRENT_LINK/AssetRipper.GUI.Free" ]; then
+	log "Already up to date ($remote_stamp)."
 	exit 0
 fi
 
 url="$(printf '%s' "$json" | jq -r --arg A "$ASSET" '.assets[] | select(.name==$A) | .browser_download_url')"
-[ -n "$url" ] || { echo "Release asset '$ASSET' not found in '$TAG'." >&2; exit 1; }
+expected_size="$(printf '%s' "$json" | jq -r --arg A "$ASSET" '.assets[] | select(.name==$A) | .size')"
+[ -n "$url" ] && [ "$url" != "null" ] || { log "Release asset '$ASSET' not found in '$TAG'."; exit 1; }
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+archive="$tmp/app.tar.xz"
 
-echo "Downloading new build ($remote_stamp) ..."
-curl -fL "$url" -o "$tmp/app.tar.xz"   # public asset: no auth header (avoids redirect signature issues)
-mkdir -p "$tmp/extract"
-tar -xJf "$tmp/app.tar.xz" -C "$tmp/extract"
+log "Downloading new build ($remote_stamp) ..."
+curl -fL --retry 5 --retry-delay 3 -o "$archive" "$url"
 
-echo "Installing update ..."
-systemctl stop "$SERVICE" 2>/dev/null || true
-mkdir -p "$APP_DIR"
-if command -v rsync >/dev/null 2>&1; then
-	rsync -a --delete "$tmp/extract/" "$APP_DIR/"
-else
-	rm -rf "${APP_DIR:?}/"* && cp -a "$tmp/extract/." "$APP_DIR/"
+# --- integrity checks (before touching anything live) ---------------------
+if [ -n "$expected_size" ] && [ "$expected_size" != "null" ]; then
+	actual_size="$(stat -c%s "$archive" 2>/dev/null || wc -c < "$archive")"
+	if [ "$actual_size" != "$expected_size" ]; then
+		log "Size mismatch: got $actual_size, expected $expected_size - aborting."
+		exit 1
+	fi
 fi
-chmod +x "$APP_DIR/AssetRipper.GUI.Free"
-id "$RUN_AS" >/dev/null 2>&1 && chown -R "$RUN_AS":"$RUN_AS" "$APP_DIR"
-printf '%s\n' "$remote_stamp" > "$STAMP_FILE"
+if ! xz -t "$archive" 2>/dev/null; then
+	log "Downloaded archive failed integrity check (truncated/corrupt) - aborting."
+	exit 1
+fi
 
-systemctl start "$SERVICE"
-echo "Updated to $remote_stamp and restarted '$SERVICE'."
+stage="$tmp/extract"
+mkdir -p "$stage"
+tar -xJf "$archive" -C "$stage"
+[ -f "$stage/AssetRipper.GUI.Free" ] || { log "Extracted build is missing the executable - aborting."; exit 1; }
+chmod +x "$stage/AssetRipper.GUI.Free"
+
+# --- stage into a versioned release dir -----------------------------------
+mkdir -p "$RELEASES_DIR"
+safe_stamp="$(printf '%s' "$remote_stamp" | tr -c 'A-Za-z0-9._-' '_')"
+new_release="$RELEASES_DIR/$safe_stamp"
+rm -rf "$new_release"
+mv "$stage" "$new_release"
+id "$RUN_AS" >/dev/null 2>&1 && chown -R "$RUN_AS":"$RUN_AS" "$new_release"
+
+previous_target="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+
+# --- atomic activation ----------------------------------------------------
+ln -sfn "$new_release" "$CURRENT_LINK.tmp"
+mv -Tf "$CURRENT_LINK.tmp" "$CURRENT_LINK"
+
+log "Restarting $SERVICE ..."
+systemctl restart "$SERVICE"
+
+# --- health check: must stay active for HEALTH_TIMEOUT seconds -------------
+healthy=1
+for _ in $(seq 1 "$HEALTH_TIMEOUT"); do
+	if systemctl is-active --quiet "$SERVICE"; then
+		healthy=0
+	else
+		healthy=1
+		break
+	fi
+	sleep 1
+done
+
+if [ "$healthy" -ne 0 ]; then
+	log "New build did not stay healthy after restart."
+	if [ -n "$previous_target" ] && [ -d "$previous_target" ] && [ "$previous_target" != "$new_release" ]; then
+		log "Rolling back to previous release: $previous_target"
+		ln -sfn "$previous_target" "$CURRENT_LINK.tmp"
+		mv -Tf "$CURRENT_LINK.tmp" "$CURRENT_LINK"
+		systemctl restart "$SERVICE" || true
+	else
+		log "No previous release to roll back to."
+	fi
+	exit 1
+fi
+
+# --- commit the stamp only after a confirmed-healthy start ----------------
+printf '%s\n' "$remote_stamp" > "$STAMP_FILE"
+log "Updated to $remote_stamp and confirmed healthy."
+
+# --- prune old releases (keep newest $KEEP; never remove current/previous) -
+if [ -d "$RELEASES_DIR" ]; then
+	# shellcheck disable=SC2012
+	ls -1dt "$RELEASES_DIR"/*/ 2>/dev/null | tail -n +"$((KEEP + 1))" | while read -r old; do
+		old="${old%/}"
+		[ "$old" = "$new_release" ] && continue
+		[ "$old" = "$previous_target" ] && continue
+		log "Pruning old release: $old"
+		rm -rf "$old"
+	done
+fi

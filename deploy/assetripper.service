@@ -11,8 +11,8 @@ Group=assetripper
 Environment=HOST=0.0.0.0
 Environment=PORT=8080
 EnvironmentFile=-/etc/assetripper.env
-WorkingDirectory=/opt/assetripper/app
-ExecStart=/opt/assetripper/app/AssetRipper.GUI.Free --host ${HOST} --port ${PORT} --headless
+WorkingDirectory=/opt/assetripper/current
+ExecStart=/opt/assetripper/current/AssetRipper.GUI.Free --host ${HOST} --port ${PORT} --headless
 Restart=on-failure
 RestartSec=5
 
