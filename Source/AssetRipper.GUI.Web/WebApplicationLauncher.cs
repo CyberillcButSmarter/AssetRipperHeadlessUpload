@@ -86,6 +86,9 @@ public static class WebApplicationLauncher
 		}
 		Logger.LogSystemInformation("AssetRipper");
 		Logger.Add(new ConsoleLogger());
+		// Mirror log output into the export progress buffer while an export runs,
+		// so it can be shown live in the browser on the export progress page.
+		Logger.Add(ExportManager.CaptureLogger);
 
 		Localization.LoadLanguage(GameFileLoader.Settings.LanguageCode);
 
@@ -275,9 +278,13 @@ public static class WebApplicationLauncher
 		app.MapPost("/Upload", Commands.HandleCommand<Commands.Upload>)
 			.Accepts<IFormFile>("multipart/form-data")
 			.Produces(StatusCodes.Status302Found);
-		app.MapGet("/Export/UnityProject/Download", Downloads.UnityProject.HandleGetRequest)
-			.Produces<byte[]>(StatusCodes.Status200OK, "application/zip");
-		app.MapGet("/Export/PrimaryContent/Download", Downloads.PrimaryContent.HandleGetRequest)
+		app.MapPost("/Export/UnityProject/Start", Downloads.UnityProject.HandleStart)
+			.Produces(StatusCodes.Status302Found);
+		app.MapPost("/Export/PrimaryContent/Start", Downloads.PrimaryContent.HandleStart)
+			.Produces(StatusCodes.Status302Found);
+		app.MapGet("/Export/Progress", Downloads.HandleProgressPage).ProducesHtmlPage();
+		app.MapGet("/Export/Progress/Poll", Downloads.HandlePoll).Produces<string>();
+		app.MapGet("/Export/Download", Downloads.HandleDownload)
 			.Produces<byte[]>(StatusCodes.Status200OK, "application/zip");
 		app.MapPost("/Reset", Commands.HandleCommand<Commands.Reset>);
 

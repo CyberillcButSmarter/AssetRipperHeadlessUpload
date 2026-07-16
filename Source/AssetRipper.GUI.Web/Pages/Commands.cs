@@ -58,6 +58,7 @@ public static class Commands
 			if (paths is { Length: > 0 })
 			{
 				GameFileLoader.LoadAndProcess(paths);
+				ExportManager.InvalidateForNewGame();
 			}
 			return null;
 		}
@@ -86,6 +87,7 @@ public static class Commands
 			if (paths is { Length: > 0 })
 			{
 				GameFileLoader.LoadAndProcess(paths);
+				ExportManager.InvalidateForNewGame();
 			}
 			return null;
 		}
@@ -186,6 +188,7 @@ public static class Commands
 
 				List<string> loadPaths = [.. Directory.GetFileSystemEntries(uploadDirectory, "*", SearchOption.TopDirectoryOnly)];
 				GameFileLoader.LoadAndProcess(loadPaths);
+				ExportManager.InvalidateForNewGame(); // a new game means any cached export is stale
 				return null;
 			}
 			catch (Exception ex)
@@ -343,6 +346,7 @@ public static class Commands
 		static Task<string?> ICommand.Execute(HttpRequest request)
 		{
 			GameFileLoader.Reset();
+			ExportManager.InvalidateForNewGame();
 			return Task.FromResult<string?>(null);
 		}
 	}
