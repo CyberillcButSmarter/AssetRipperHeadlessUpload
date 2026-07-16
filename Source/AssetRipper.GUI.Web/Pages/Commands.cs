@@ -114,6 +114,9 @@ public static class Commands
 			}
 
 			string uploadDirectory = CreateFreshUploadDirectory();
+			// Canonical root (with a trailing separator) used to verify every saved file
+			// stays inside the upload directory.
+			string uploadRoot = Path.GetFullPath(uploadDirectory) + Path.DirectorySeparatorChar;
 			try
 			{
 				int savedCount = 0;
@@ -140,10 +143,18 @@ public static class Commands
 						continue;
 					}
 
+					// Defense-in-depth: resolve the final path and require it to stay inside
+					// the upload directory, so no crafted name can escape even if sanitizing missed something.
+					string destination = Path.GetFullPath(Path.Combine(uploadDirectory, relativePath));
+					if (!destination.StartsWith(uploadRoot, StringComparison.Ordinal))
+					{
+						Logger.Warning(LogCategory.Import, $"Rejected upload path escaping the upload directory: '{relativePath}'");
+						continue;
+					}
+
 					// Stream to a .part file and rename on completion, so a client that
 					// disconnects mid-transfer can never leave a partial file that looks
 					// complete. If CopyToAsync throws, the catch below discards everything.
-					string destination = Path.Combine(uploadDirectory, relativePath);
 					Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
 					string partialPath = destination + ".part";
 					await using (FileStream fileStream = File.Create(partialPath))
@@ -214,10 +225,14 @@ public static class Commands
 				{
 					cleaned = cleaned.Replace(c.ToString(), "");
 				}
-				if (cleaned.Length > 0)
+				// Re-check AFTER stripping: removing invalid chars (e.g. NUL, or ':' on
+				// Windows) could turn a benign-looking segment into "." or ".." and
+				// reintroduce traversal.
+				if (cleaned.Length == 0 || cleaned == "." || cleaned == "..")
 				{
-					parts.Add(cleaned);
+					continue;
 				}
+				parts.Add(cleaned);
 			}
 
 			return parts.Count == 0 ? null : Path.Combine([.. parts]);
