@@ -49,6 +49,14 @@ public sealed class CommandsPage : VuePage
 			{
 				WriteLink(writer, "/Reset", Localization.MenuFileReset, "btn btn-danger");
 			}
+
+			// Download the decompiled result back to the client machine (for remote hosts,
+			// where the server-side export path below is not reachable by the uploader).
+			using (new P(writer).End())
+			{
+				WriteDownloadLink(writer, "/Export/UnityProject/Download", $"{Localization.ExportUnityProject} (.zip)", "btn btn-primary");
+				WriteDownloadLink(writer, "/Export/PrimaryContent/Download", $"{Localization.ExportPrimaryContent} (.zip)", "btn btn-primary");
+			}
 			using (new P(writer).End())
 			{
 				using (new Form(writer).End())
@@ -115,6 +123,15 @@ public sealed class CommandsPage : VuePage
 	private static void WriteLink(TextWriter writer, string url, string name, string? @class = null)
 	{
 		using (new Form(writer).WithAction(url).WithMethod("post").End())
+		{
+			new Input(writer).WithType("submit").WithClass(@class).WithValue(name.ToHtml()).Close();
+		}
+	}
+
+	private static void WriteDownloadLink(TextWriter writer, string url, string name, string? @class = null)
+	{
+		// GET form: submitting navigates to the export endpoint, which streams a zip download.
+		using (new Form(writer).WithAction(url).WithMethod("get").End())
 		{
 			new Input(writer).WithType("submit").WithClass(@class).WithValue(name.ToHtml()).Close();
 		}

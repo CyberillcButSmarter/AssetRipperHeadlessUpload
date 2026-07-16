@@ -275,6 +275,10 @@ public static class WebApplicationLauncher
 		app.MapPost("/Upload", Commands.HandleCommand<Commands.Upload>)
 			.Accepts<IFormFile>("multipart/form-data")
 			.Produces(StatusCodes.Status302Found);
+		app.MapGet("/Export/UnityProject/Download", Downloads.UnityProject.HandleGetRequest)
+			.Produces<byte[]>(StatusCodes.Status200OK, "application/zip");
+		app.MapGet("/Export/PrimaryContent/Download", Downloads.PrimaryContent.HandleGetRequest)
+			.Produces<byte[]>(StatusCodes.Status200OK, "application/zip");
 		app.MapPost("/Reset", Commands.HandleCommand<Commands.Reset>);
 
 		//Dialogs
