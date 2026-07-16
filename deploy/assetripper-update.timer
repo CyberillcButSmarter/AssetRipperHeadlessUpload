@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically check for AssetRipper continuous-release updates
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

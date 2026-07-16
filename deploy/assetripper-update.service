@@ -1,0 +1,9 @@
+[Unit]
+Description=Update AssetRipper to the latest continuous release
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/assetripper.env
+ExecStart=/opt/assetripper/update-assetripper.sh
