@@ -107,36 +107,46 @@ rm -rf "$new_release"
 mv "$stage" "$new_release"
 id "$RUN_AS" >/dev/null 2>&1 && chown -R "$RUN_AS":"$RUN_AS" "$new_release"
 
-previous_target="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+# Record the currently-active release for rollback. Only if 'current' is a real
+# symlink (not on first install) - resolving a non-existent link would otherwise
+# yield the link's own path and cause a self-referential rollback.
+previous_target=""
+if [ -L "$CURRENT_LINK" ]; then
+	previous_target="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+fi
 
 # --- atomic activation ----------------------------------------------------
 ln -sfn "$new_release" "$CURRENT_LINK.tmp"
 mv -Tf "$CURRENT_LINK.tmp" "$CURRENT_LINK"
 
 log "Restarting $SERVICE ..."
-systemctl restart "$SERVICE"
+systemctl restart "$SERVICE" || true
 
-# --- health check: must stay active for HEALTH_TIMEOUT seconds -------------
+# --- health check: wait for it to come up, then confirm it stays up -------
 healthy=1
 for _ in $(seq 1 "$HEALTH_TIMEOUT"); do
 	if systemctl is-active --quiet "$SERVICE"; then
 		healthy=0
-	else
-		healthy=1
 		break
 	fi
 	sleep 1
 done
+# Guard against a crash-loop: confirm it is still active a few seconds later.
+if [ "$healthy" -eq 0 ]; then
+	sleep 3
+	systemctl is-active --quiet "$SERVICE" || healthy=1
+fi
 
 if [ "$healthy" -ne 0 ]; then
-	log "New build did not stay healthy after restart."
+	log "New build did not stay healthy after restart. Recent service logs:"
+	journalctl -u "$SERVICE" -n 40 --no-pager 2>/dev/null | sed 's/^/    /' || true
 	if [ -n "$previous_target" ] && [ -d "$previous_target" ] && [ "$previous_target" != "$new_release" ]; then
 		log "Rolling back to previous release: $previous_target"
 		ln -sfn "$previous_target" "$CURRENT_LINK.tmp"
 		mv -Tf "$CURRENT_LINK.tmp" "$CURRENT_LINK"
 		systemctl restart "$SERVICE" || true
 	else
-		log "No previous release to roll back to."
+		log "No previous healthy release to roll back to (leaving new build in place for diagnosis)."
 	fi
 	exit 1
 fi
