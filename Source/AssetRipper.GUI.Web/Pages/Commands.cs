@@ -114,58 +114,91 @@ public static class Commands
 			}
 
 			string uploadDirectory = CreateFreshUploadDirectory();
-			List<string> savedFiles = [];
-
-			MultipartReader reader = new(boundary, request.Body);
-			MultipartSection? section;
-			while ((section = await reader.ReadNextSectionAsync()) is not null)
+			try
 			{
-				if (!ContentDispositionHeaderValue.TryParse(section.ContentDisposition, out ContentDispositionHeaderValue? disposition)
-					|| !disposition.IsFileDisposition())
+				List<string> savedFiles = [];
+
+				MultipartReader reader = new(boundary, request.Body);
+				MultipartSection? section;
+				while ((section = await reader.ReadNextSectionAsync()) is not null)
 				{
-					continue;
+					if (!ContentDispositionHeaderValue.TryParse(section.ContentDisposition, out ContentDispositionHeaderValue? disposition)
+						|| !disposition.IsFileDisposition())
+					{
+						continue;
+					}
+
+					// Path.GetFileName strips any directory components a malicious client might send.
+					string fileName = Path.GetFileName(disposition.FileNameStar.Value ?? disposition.FileName.Value ?? "");
+					if (string.IsNullOrEmpty(fileName))
+					{
+						continue;
+					}
+
+					// Stream to a .part file and rename on completion, so a client that
+					// disconnects mid-transfer can never leave a partial file that looks
+					// complete. If CopyToAsync throws, the catch below discards everything.
+					string destination = Path.Combine(uploadDirectory, fileName);
+					string partialPath = destination + ".part";
+					await using (FileStream fileStream = File.Create(partialPath))
+					{
+						await section.Body.CopyToAsync(fileStream);
+					}
+					File.Move(partialPath, destination, overwrite: true);
+					Logger.Info(LogCategory.Import, $"Received upload '{fileName}'.");
+					savedFiles.Add(destination);
 				}
 
-				// Path.GetFileName strips any directory components a malicious client might send.
-				string fileName = Path.GetFileName(disposition.FileNameStar.Value ?? disposition.FileName.Value ?? "");
-				if (string.IsNullOrEmpty(fileName))
+				if (savedFiles.Count == 0)
 				{
-					continue;
+					// Nothing usable arrived - don't leave an empty temp dir behind.
+					TryDeleteDirectory(uploadDirectory);
+					return CommandsPath;
 				}
 
-				string destination = Path.Combine(uploadDirectory, fileName);
-				await using (FileStream fileStream = File.Create(destination))
+				List<string> loadPaths = [];
+				foreach (string file in savedFiles)
 				{
-					await section.Body.CopyToAsync(fileStream);
+					if (string.Equals(Path.GetExtension(file), ".zip", StringComparison.OrdinalIgnoreCase))
+					{
+						// A zipped folder: extract it and load the resulting directory.
+						string extractedDirectory = Path.Combine(uploadDirectory, Path.GetFileNameWithoutExtension(file));
+						Directory.CreateDirectory(extractedDirectory);
+						ZipFile.ExtractToDirectory(file, extractedDirectory, overwriteFiles: true);
+						loadPaths.Add(extractedDirectory);
+					}
+					else
+					{
+						loadPaths.Add(file);
+					}
 				}
-				Logger.Info(LogCategory.Import, $"Received upload '{fileName}'.");
-				savedFiles.Add(destination);
+
+				GameFileLoader.LoadAndProcess(loadPaths);
+				return null;
 			}
-
-			if (savedFiles.Count == 0)
+			catch (Exception ex)
 			{
-				return CommandsPath;
+				// An interrupted upload or a corrupt/truncated zip must not leave junk
+				// on disk or a half-loaded state. Discard this upload's temp files.
+				Logger.Error(LogCategory.Import, $"Upload failed, discarding: {ex.Message}");
+				TryDeleteDirectory(uploadDirectory);
+				throw;
 			}
+		}
 
-			List<string> loadPaths = [];
-			foreach (string file in savedFiles)
+		private static void TryDeleteDirectory(string directory)
+		{
+			try
 			{
-				if (string.Equals(Path.GetExtension(file), ".zip", StringComparison.OrdinalIgnoreCase))
+				if (Directory.Exists(directory))
 				{
-					// A zipped folder: extract it and load the resulting directory.
-					string extractedDirectory = Path.Combine(uploadDirectory, Path.GetFileNameWithoutExtension(file));
-					Directory.CreateDirectory(extractedDirectory);
-					ZipFile.ExtractToDirectory(file, extractedDirectory, overwriteFiles: true);
-					loadPaths.Add(extractedDirectory);
-				}
-				else
-				{
-					loadPaths.Add(file);
+					Directory.Delete(directory, true);
 				}
 			}
-
-			GameFileLoader.LoadAndProcess(loadPaths);
-			return null;
+			catch (Exception ex)
+			{
+				Logger.Warning(LogCategory.Import, $"Could not clean up upload directory: {ex.Message}");
+			}
 		}
 
 		private static string CreateFreshUploadDirectory()
