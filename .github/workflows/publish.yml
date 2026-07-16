@@ -80,10 +80,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -R release-assets
+          # This job doesn't check out the repo, so gh has no git context - pass -R.
           # Roll the single "continuous" tag forward to the freshly built commit:
           # delete the old release + tag, then recreate at this commit with new assets.
-          gh release delete continuous --cleanup-tag --yes || true
+          gh release delete continuous -R "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
           gh release create continuous release-assets/* \
+            -R "$GITHUB_REPOSITORY" \
             --prerelease \
             --target "$GITHUB_SHA" \
             --title "Continuous build" \
