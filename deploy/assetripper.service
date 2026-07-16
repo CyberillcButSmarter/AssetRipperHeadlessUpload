@@ -13,7 +13,7 @@ User=assetripper
 Group=assetripper
 # Defaults; override HOST/PORT in /etc/assetripper.env
 Environment=HOST=0.0.0.0
-Environment=PORT=8080
+Environment=PORT=8087
 EnvironmentFile=-/etc/assetripper.env
 WorkingDirectory=/opt/assetripper/current
 ExecStart=/opt/assetripper/current/AssetRipper.GUI.Free --host ${HOST} --port ${PORT} --headless
