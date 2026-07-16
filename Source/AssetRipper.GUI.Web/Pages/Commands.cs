@@ -116,7 +116,7 @@ public static class Commands
 			string uploadDirectory = CreateFreshUploadDirectory();
 			try
 			{
-				List<string> savedFiles = [];
+				int savedCount = 0;
 
 				MultipartReader reader = new(boundary, request.Body);
 				MultipartSection? section;
@@ -128,9 +128,14 @@ public static class Commands
 						continue;
 					}
 
-					// Path.GetFileName strips any directory components a malicious client might send.
-					string fileName = Path.GetFileName(disposition.FileNameStar.Value ?? disposition.FileName.Value ?? "");
-					if (string.IsNullOrEmpty(fileName))
+					// When a folder is uploaded (a "webkitdirectory" input) the browser puts
+					// each file's path relative to the chosen folder in the filename, e.g.
+					// "MyGame/Managed/x.dll". Preserve that structure - stripping it to the
+					// bare name would flatten the folder and destroy the game layout. A plain
+					// file upload just yields a single-segment name. SanitizeRelativePath keeps
+					// the subfolders while removing any absolute/".." path-traversal attempt.
+					string? relativePath = SanitizeRelativePath(disposition.FileNameStar.Value ?? disposition.FileName.Value);
+					if (relativePath is null)
 					{
 						continue;
 					}
@@ -138,41 +143,37 @@ public static class Commands
 					// Stream to a .part file and rename on completion, so a client that
 					// disconnects mid-transfer can never leave a partial file that looks
 					// complete. If CopyToAsync throws, the catch below discards everything.
-					string destination = Path.Combine(uploadDirectory, fileName);
+					string destination = Path.Combine(uploadDirectory, relativePath);
+					Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
 					string partialPath = destination + ".part";
 					await using (FileStream fileStream = File.Create(partialPath))
 					{
 						await section.Body.CopyToAsync(fileStream);
 					}
 					File.Move(partialPath, destination, overwrite: true);
-					Logger.Info(LogCategory.Import, $"Received upload '{fileName}'.");
-					savedFiles.Add(destination);
+					savedCount++;
 				}
 
-				if (savedFiles.Count == 0)
+				if (savedCount == 0)
 				{
 					// Nothing usable arrived - don't leave an empty temp dir behind.
 					TryDeleteDirectory(uploadDirectory);
 					return CommandsPath;
 				}
+				Logger.Info(LogCategory.Import, $"Received {savedCount} uploaded file(s).");
 
-				List<string> loadPaths = [];
-				foreach (string file in savedFiles)
+				// Auto-extract any top-level zips (a zipped folder), then hand AssetRipper the
+				// top-level entries of the upload dir. That uniformly covers a single file,
+				// several files, or an uploaded folder's root directory.
+				foreach (string zip in Directory.GetFiles(uploadDirectory, "*.zip", SearchOption.TopDirectoryOnly))
 				{
-					if (string.Equals(Path.GetExtension(file), ".zip", StringComparison.OrdinalIgnoreCase))
-					{
-						// A zipped folder: extract it and load the resulting directory.
-						string extractedDirectory = Path.Combine(uploadDirectory, Path.GetFileNameWithoutExtension(file));
-						Directory.CreateDirectory(extractedDirectory);
-						ZipFile.ExtractToDirectory(file, extractedDirectory, overwriteFiles: true);
-						loadPaths.Add(extractedDirectory);
-					}
-					else
-					{
-						loadPaths.Add(file);
-					}
+					string extractedDirectory = Path.Combine(uploadDirectory, Path.GetFileNameWithoutExtension(zip));
+					Directory.CreateDirectory(extractedDirectory);
+					ZipFile.ExtractToDirectory(zip, extractedDirectory, overwriteFiles: true);
+					File.Delete(zip);
 				}
 
+				List<string> loadPaths = [.. Directory.GetFileSystemEntries(uploadDirectory, "*", SearchOption.TopDirectoryOnly)];
 				GameFileLoader.LoadAndProcess(loadPaths);
 				return null;
 			}
@@ -184,6 +185,42 @@ public static class Commands
 				TryDeleteDirectory(uploadDirectory);
 				throw;
 			}
+		}
+
+		/// <summary>
+		/// Turns a browser-supplied (possibly nested) upload filename into a safe path
+		/// relative to the upload directory: subfolders are preserved, but any rooted
+		/// path, drive prefix, "." / ".." segment or invalid character is stripped, so a
+		/// malicious client cannot write outside the upload directory. Returns null if
+		/// nothing usable remains.
+		/// </summary>
+		private static string? SanitizeRelativePath(string? raw)
+		{
+			if (string.IsNullOrEmpty(raw))
+			{
+				return null;
+			}
+
+			char[] invalid = Path.GetInvalidFileNameChars();
+			List<string> parts = [];
+			foreach (string segment in raw.Replace('\\', '/').Split('/'))
+			{
+				if (segment.Length == 0 || segment == "." || segment == "..")
+				{
+					continue;
+				}
+				string cleaned = segment;
+				foreach (char c in invalid)
+				{
+					cleaned = cleaned.Replace(c.ToString(), "");
+				}
+				if (cleaned.Length > 0)
+				{
+					parts.Add(cleaned);
+				}
+			}
+
+			return parts.Count == 0 ? null : Path.Combine([.. parts]);
 		}
 
 		private static void TryDeleteDirectory(string directory)

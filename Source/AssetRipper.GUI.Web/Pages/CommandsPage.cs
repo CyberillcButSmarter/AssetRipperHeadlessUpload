@@ -30,16 +30,31 @@ public sealed class CommandsPage : VuePage
 				}
 			}
 
-			// Upload from a remote machine: the browser sends the file(s) to the server,
-			// which decompiles them host-side. Zip a data folder to upload it as one file.
+			// Upload from a remote machine: these open your own computer's file/folder
+			// picker (client-side), then send the selection to the host, which decompiles
+			// it server-side. Selecting immediately uploads; the buttons are a fallback.
 			using (new P(writer).End())
 			{
+				// File(s)
 				using (new Form(writer).WithAction("/Upload").WithMethod("post")
 					.WithCustomAttribute("enctype", "multipart/form-data").End())
 				{
+					new Label(writer).WithClass("form-label").Close("Upload file(s)");
 					new Input(writer).WithClass("form-control mb-2").WithType("file").WithName("files")
-						.WithCustomAttribute("multiple", "").Close();
-					new Input(writer).WithType("submit").WithClass("btn btn-primary").WithValue(Localization.MenuLoad).Close();
+						.WithCustomAttribute("multiple", "")
+						.WithCustomAttribute("onchange", "if(this.files.length)this.form.submit()").Close();
+					new Input(writer).WithType("submit").WithClass("btn btn-primary mb-3").WithValue("Upload files").Close();
+				}
+
+				// Whole folder (the browser sends every file in it, preserving structure)
+				using (new Form(writer).WithAction("/Upload").WithMethod("post")
+					.WithCustomAttribute("enctype", "multipart/form-data").End())
+				{
+					new Label(writer).WithClass("form-label").Close("Upload a folder");
+					new Input(writer).WithClass("form-control mb-2").WithType("file").WithName("files")
+						.WithCustomAttribute("webkitdirectory", "")
+						.WithCustomAttribute("onchange", "if(this.files.length)this.form.submit()").Close();
+					new Input(writer).WithType("submit").WithClass("btn btn-primary").WithValue("Upload folder").Close();
 				}
 			}
 		}
