@@ -29,8 +29,9 @@ if [ ! -f /etc/assetripper.env ]; then
 	echo "==> Writing default /etc/assetripper.env ..."
 	cat > /etc/assetripper.env <<'EOF'
 # Bind address and port for the host. 0.0.0.0 = reachable on your LAN/VPN.
+# 8080 is avoided by default because Docker and many apps grab it; change freely.
 HOST=0.0.0.0
-PORT=8080
+PORT=8087
 # Release source for the auto-updater.
 REPO=CyberillcButSmarter/AssetRipperHeadlessUpload
 TAG=continuous

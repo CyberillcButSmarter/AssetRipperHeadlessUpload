@@ -22,9 +22,9 @@ sudo ./deploy/install.sh
 ```
 
 That installs everything, downloads the current build, starts the service on
-`0.0.0.0:8080`, and enables the 15-minute update timer.
+`0.0.0.0:8087`, and enables the 15-minute update timer.
 
-Open `http://<box-ip>:8080/Commands` from any machine on your LAN/VPN, upload a
+Open `http://<box-ip>:8087/Commands` from any machine on your LAN/VPN, upload a
 game (an apk/exe, or a **zipped** data folder), and download the decompiled result
 with the "Export … (.zip)" buttons.
 
@@ -34,7 +34,7 @@ Edit `/etc/assetripper.env` then `sudo systemctl restart assetripper`:
 
 ```ini
 HOST=0.0.0.0      # 127.0.0.1 to restrict to localhost / a reverse proxy
-PORT=8080
+PORT=8087
 REPO=CyberillcButSmarter/AssetRipperHeadlessUpload
 TAG=continuous
 # GITHUB_TOKEN=   # only for private repos or higher API rate limits
@@ -87,5 +87,5 @@ Layout on disk:
 
 - The host runs a decompiler over whatever you upload, so keep it **LAN/VPN-only**
   (the default `0.0.0.0` bind + a firewall, or bind `127.0.0.1` behind a reverse
-  proxy with auth). Don't expose port 8080 to the internet.
+  proxy with auth). Don't expose port 8087 to the internet.
 - The service runs as the unprivileged `assetripper` user; only the updater needs root.
