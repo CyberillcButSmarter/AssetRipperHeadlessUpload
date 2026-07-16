@@ -2,6 +2,10 @@
 Description=AssetRipper Headless Upload host
 After=network-online.target
 Wants=network-online.target
+# Stop hammering restarts if it can't start (e.g. the port is taken): give up
+# after 5 failures in 60s instead of crash-looping forever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
